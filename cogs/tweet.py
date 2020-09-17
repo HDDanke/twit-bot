@@ -39,20 +39,23 @@ class TweetDB(commands.Cog):
     def insert_message(self, message_id, channel_id, guild_id):
         try:
             self.conn.execute("INSERT INTO Messages(message_id, channel_id, guild_id) VALUES(?,?,?)", (message_id, channel_id, guild_id))
+            return 0
         except sqlite3.IntegrityError:
-            return
+            return 1
 
     def insert_post(self, message_id, status_id):
         try:
             self.conn.execute("INSERT INTO Posts(message_id, status_id) VALUES(?,?)", (message_id, status_id))
+            return 0
         except sqlite3.IntegrityError:
-            return
+            return 1
 
     def insert_tweet(self, artist_id, status_id):
         try:
             self.conn.execute("INSERT INTO Tweets(artist_id, status_id) VALUES(?,?)", (artist_id, status_id))
+            return 0
         except sqlite3.IntegrityError:
-            return
+            return 1
 
     def channel_perms(self, channel_id, guild_id):
         with contextlib.closing(self.conn_sett.cursor()) as cursor:
@@ -77,7 +80,7 @@ class TweetDB(commands.Cog):
                 return
         can_check_new = perms["check_new_tweets"]
         can_insert_new = perms["insert_new_tweets"]
-        # ignore message if channel has neither insert or check permissions
+        # ignore message if channel has neither insert nor check permissions
         if not (can_check_new or can_insert_new):
             return
 
@@ -91,9 +94,9 @@ class TweetDB(commands.Cog):
         # insert message into db
         if can_insert_new:
             self.insert_message(message.id, message.channel.id, message.guild.id)
-            
+        
+        # iterate through artist and status ids from message        
         for artist_id, status_id in arstats:
-        # iterate through artist and status ids from message
             # check if status id is already in db
             if can_check_new and is_status_in_db(status_id):
                 # rollback all inserts, break the loop and highlight the message
@@ -112,12 +115,12 @@ class TweetDB(commands.Cog):
     @commands.Cog.listener()
     async def on_raw_message_delete(self, message):
         
-        def is_message_in_db(self, message_id):
+        def is_message_in_db(message_id):
             with contextlib.closing(self.conn.cursor()) as cursor:
                 cursor.execute("SELECT 1 FROM Messages WHERE message_id = ? LIMIT 1", (message_id,))
                 return cursor.fetchone()
             
-        def status_ids_from_message(self, message_id):
+        def status_ids_from_message(message_id):
             with contextlib.closing(self.conn.cursor()) as cursor:
                 cursor.execute("SELECT status_id FROM Posts WHERE message_id = ?", (message_id,))
                 return cursor.fetchall()
@@ -131,22 +134,23 @@ class TweetDB(commands.Cog):
             # iterate through status ids and try to delete all unreferenced parents
             for status_id in tweets:
                 try:
-                    self.conn.execute("DELETE FROM Tweets WHERE status_id = ?", (status_id,))
+                    self.conn.execute("DELETE FROM Tweets WHERE status_id = ? LIMIT 1", (status_id,))
                 except sqlite3.IntegrityError:
                     return
-
+            self.conn.commit()
+ 
     @commands.Cog.listener()
     async def on_ready(self):
     
         with contextlib.closing(self.conn.cursor()) as cursor:
-            cursor.execute("SELECT channel_id, MAX(message_id) FROM Messages GROUP BY channel_id ORDER BY message_id")
+            cursor.execute("SELECT guild_id, channel_id, MAX(message_id) FROM Messages GROUP BY channel_id ORDER BY message_id")
             last_messages = cursor.fetchall()
                 
         print(last_messages)
-        for channel_id, message_id in last_messages:
+        for guild_id, channel_id, message_id in last_messages:
             print(f"channel_id: {channel_id} (type: {type(channel_id)})")
             print(f"message_id: {message_id} (type: {type(message_id)})")
-            perms = self.channel_perms(message.channel.id, message.guild.id)
+            perms = self.channel_perms(channel_id, guild_id)
             if perms == []:
                 continue
             has_history = perms["insert_tweets_from_history"]  
@@ -182,40 +186,37 @@ class TweetDB(commands.Cog):
         # add author check
     
     
-    @commands.group(aliases = ["tdb"])
-    async def tweetdb(self, ctx):
-        pass
-
-    @tweetdb.group(name ="table", aliases = ["tab"])
+    @commands.group(name ="table", aliases = ["tab"])
     @commands.is_owner()
-    async def tdb_table(self, ctx):
+    async def table(self, ctx):
         pass
 
-    @tdb_table.group(name = "clear")
-    async def tdb_tab_clear(self, ctx):
+    @table.group(name = "clear")
+    async def tab_clear(self, ctx):
         pass
     
-    @tdb_tab_clear.command(name = "all")
-    async def tdb_tab_clear_all(self, ctx):
-        self.conn.executescript("DELETE FROM Messages; DELETE FROM Tweets;")
+    @tab_clear.command(name = "all")
+    async def tab_clear_all(self, ctx):
+        self.conn.executescript("DELETE FROM Messages; DELETE FROM Tweets; DELETE FROM Posts")
         self.conn.commit()
         print("cogs.tweet: cleared all entries in twit.db")
     
-    @tdb_tab_clear.command(name = "channel")
+    @tab_clear.command(name = "channel")
     @commands.guild_only()
-    async def tdb_tab_clear_chanl(self, ctx, channel_id):
+    async def tab_clear_chanl(self, ctx, channel_id):
         print(channel_id)
         self.conn.execute("DELETE FROM Messages WHERE channel_id = ?", (channel_id,))
         self.conn.execute("DELETE FROM Tweets")
         self.conn.commit()
     
-    @tdb_table.command(name = "insert")
-    async def tdb_tab_insert(self, ctx, *channel_ids):
+    @table.command(name = "insert")
+    async def tab_insert(self, ctx, *channel_ids):
         for channel_id in channel_ids:
             print(channel_id)
             channel = self.bot.get_channel(int(channel_id))
             print(channel)
             async for message in channel.history(limit = None, oldest_first = True):
+                entries_count += 1
                 # ignore bot commands
                 if message.author.bot:
                         pass
@@ -225,12 +226,15 @@ class TweetDB(commands.Cog):
 
                     # ignore message if no ids are found
                     if arstats != []:
-                        self.insert_message(message.id, message.channel.id, message.guild.id)
+                        tweets_count += 1
+                        ins_msg_fail += self.insert_message(message.id, message.channel.id, message.guild.id)
                         for artist_id, status_id in arstats:
-                            self.insert_post(message.id, status_id)
-                            self.insert_tweet(artist_id, status_id)
+                            ins_pos_fail += self.insert_post(message.id, status_id)
+                            ins_twt_fail += self.insert_tweet(artist_id, status_id)
+            await ctx.send(f"{channel.name} done")
+        await ctx.send(f"Found {tweets_count} tweets out of {entries_count} messages \nFailed inserts: \n{ins_msg_fail} in Messages \n{ins_pos_fail} in Posts \n{ins_twt_fail} in Tweets")         
         self.conn.commit()
-            
+                
 def setup(bot):
     bot.add_cog(TweetDB(bot))
 

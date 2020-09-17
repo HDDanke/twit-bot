@@ -1,21 +1,21 @@
 import discord
 from discord.ext import commands
 
-with open("token.txt","r") as file:
+with open("token.txt", "r") as file:
     TOKEN = file.readline()
 
-bot = commands.Bot('-')
+bot = commands.Bot("-")
 
-extensions = ['cogs.tweet', 'cogs.cogs', 'cogs.settings']
+extensions = ["tweet", "cogs", "settings"]
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     for extension in extensions:
-        bot.load_extension(extension)
+        bot.load_extension("cogs." + extension)
 
 @bot.event
 async def on_ready():
 
-    print(f'\n\nLogged in as: {bot.user.name} - {bot.user.id}\nVersion: {discord.__version__}\n')
+    print(f"\n\nLogged in as: {bot.user.name} - {bot.user.id}\nVersion: {discord.__version__}\n")
     game = discord.Game("with links (v3)")
     await bot.change_presence(activity=game)
 
